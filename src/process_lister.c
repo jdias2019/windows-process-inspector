@@ -49,6 +49,7 @@ void loadProcesses() {
 
     if (Process32First(hSnapshot, &pe32)) {
         do {
+            if (pe32.th32ProcessID == 0) continue;
             _tcscpy(g_processes[g_counter].szProcessName, pe32.szExeFile);
             g_processes[g_counter].processID = pe32.th32ProcessID;
             g_processes[g_counter].parentProcessID = pe32.th32ParentProcessID;
