@@ -4,6 +4,7 @@
 #include<psapi.h>
 #include<tlhelp32.h>
 #include<commctrl.h>
+#include<shellapi.h>      
 
 #define MAX_PROCESSES 1000
 
@@ -11,11 +12,34 @@ struct process {
     TCHAR szProcessName[MAX_PATH];
     DWORD processID;
     DWORD parentProcessID;
+    FILETIME upTime;
 };
 
 HWND g_hWnd; // global window handle
+HWND g_hList;
 struct process g_processes[MAX_PROCESSES];
 int g_counter = 0;
+int g_sortAscending = 0;
+int g_totalProcesses = 0;     
+BOOL g_bInitialized = FALSE;  
+
+void FormatUptime(FILETIME ft, TCHAR* buf, int size) {
+    FILETIME now;
+    GetSystemTimeAsFileTime(&now);
+    ULARGE_INTEGER ulNow, ulStart;
+    ulNow.LowPart = now.dwLowDateTime; ulNow.HighPart = now.dwHighDateTime;
+    ulStart.LowPart = ft.dwLowDateTime; ulStart.HighPart = ft.dwHighDateTime;
+    ULONGLONG secs = (ulNow.QuadPart - ulStart.QuadPart) / 10000000ULL;
+    int d = (int)(secs / 86400), h = (int)((secs % 86400) / 3600), m = (int)((secs % 3600) / 60);
+    if (d > 0) wsprintf(buf, TEXT("%dd %dh"), d, h);
+    else if (h > 0) wsprintf(buf, TEXT("%dh %dm"), h, m);
+    else wsprintf(buf, TEXT("%dm"), m > 0 ? m : 1);
+}
+
+void LogProcessCount(int count) {
+
+
+}
 
 void loadProcesses() {
     HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -27,11 +51,23 @@ void loadProcesses() {
             _tcscpy(g_processes[g_counter].szProcessName, pe32.szExeFile);
             g_processes[g_counter].processID = pe32.th32ProcessID;
             g_processes[g_counter].parentProcessID = pe32.th32ParentProcessID;
+
+            HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe32.th32ProcessID);
+            if (hProcess) {
+                FILETIME ftExit, ftKernel, ftUser;
+                GetProcessTimes(hProcess, &g_processes[g_counter].upTime, &ftExit, &ftKernel, &ftUser);
+                CloseHandle(hProcess);
+            } else {
+                g_processes[g_counter].upTime.dwLowDateTime = 0;
+                g_processes[g_counter].upTime.dwHighDateTime = 0;
+            }
             g_counter++;
+            g_totalProcesses++;  
 
         } while (Process32Next(hSnapshot, &pe32) && g_counter < MAX_PROCESSES);
     }
 
+    g_bInitialized = TRUE; 
     CloseHandle(hSnapshot);
 }
 
@@ -58,12 +94,67 @@ void listProcessNameAndID (DWORD processID) {
     CloseHandle(hProcess);
 }
 
+int CompareByCreationDesc(const void* a, const void* b) {
+    struct process* pa = (struct process*)a;
+    struct process* pb = (struct process*)b;
+    return CompareFileTime(&pb->upTime, &pa->upTime);
+}
+
+int CompareByCreationAsc(const void* a, const void* b) {
+    return CompareByCreationDesc(b, a);
+}
+
+void ReloadList() {
+    SendMessage(g_hList, WM_SETREDRAW, FALSE, 0);
+    SendMessage(g_hList, LVM_DELETEALLITEMS, 0, 0);
+
+    for (int i = 0; i < g_counter; i++) {
+        TCHAR pidStr[32], ppidStr[32], uptimeStr[32];
+        wsprintf(pidStr, TEXT("%d"), g_processes[i].processID);
+        wsprintf(ppidStr, TEXT("%d"), g_processes[i].parentProcessID);
+        if (g_processes[i].upTime.dwLowDateTime == 0 && g_processes[i].upTime.dwHighDateTime == 0) {
+            _tcscpy(uptimeStr, TEXT("N/A"));
+        } else {
+            FormatUptime(g_processes[i].upTime, uptimeStr, 32);
+        }
+
+        LVITEM lvi = {0};
+        lvi.mask = LVIF_TEXT;
+        lvi.iItem = i;
+        lvi.iSubItem = 0;
+        lvi.pszText = g_processes[i].szProcessName;
+        SendMessage(g_hList, LVM_INSERTITEM, 0, (LPARAM)&lvi);
+        lvi.iSubItem = 1; lvi.pszText = pidStr;
+        SendMessage(g_hList, LVM_SETITEM, 0, (LPARAM)&lvi);
+        lvi.iSubItem = 2; lvi.pszText = ppidStr;
+        SendMessage(g_hList, LVM_SETITEM, 0, (LPARAM)&lvi);
+        lvi.iSubItem = 3; lvi.pszText = uptimeStr;
+        SendMessage(g_hList, LVM_SETITEM, 0, (LPARAM)&lvi);
+    }
+
+    SendMessage(g_hList, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(g_hList, NULL, TRUE);
+}
+
 // window procedure function
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
         case WM_DESTROY:
             PostQuitMessage(0);
             return 0;
+
+        case WM_NOTIFY: {
+            LPNMHDR nmh = (LPNMHDR)lParam;
+            if (nmh->hwndFrom == g_hList && nmh->code == LVN_COLUMNCLICK) {
+                LPNMLISTVIEW lv = (LPNMLISTVIEW)lParam;
+                if (lv->iSubItem == 3) {
+                    g_sortAscending = !g_sortAscending;
+                    qsort(g_processes, g_counter, sizeof(struct process), g_sortAscending ? CompareByCreationAsc : CompareByCreationDesc);
+                    ReloadList();
+                }
+            }
+            break;
+        }
     }
 
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
@@ -114,33 +205,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         g_hWnd, NULL, hInstance, NULL
     );
 
+    g_hList = hList;
+
     ListView_SetExtendedListViewStyle(hList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
 
     LVCOLUMN lvc = {0};
     lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
-    lvc.iSubItem = 0; lvc.pszText = TEXT("Process Name"); lvc.cx = 1025;
+    lvc.iSubItem = 0; lvc.pszText = TEXT("Process Name"); lvc.cx = 925;
     SendMessage(hList, LVM_INSERTCOLUMN, 0, (LPARAM)&lvc);    
     lvc.iSubItem = 1; lvc.pszText = TEXT("PID"); lvc.cx = 80;
     SendMessage(hList, LVM_INSERTCOLUMN, 1, (LPARAM)&lvc);
     lvc.iSubItem = 2; lvc.pszText = TEXT("PPID"); lvc.cx = 80;
     SendMessage(hList, LVM_INSERTCOLUMN, 2, (LPARAM)&lvc);
+    lvc.iSubItem = 3; lvc.pszText = TEXT("Uptime"); lvc.cx = 100;
+    SendMessage(hList, LVM_INSERTCOLUMN, 3, (LPARAM)&lvc);
 
-    for (int i = 0; i < g_counter; i++) {
-
-        TCHAR pidStr[32], ppidStr[32];
-        wsprintf(pidStr, TEXT("%d"), g_processes[i].processID);
-        wsprintf(ppidStr, TEXT("%d"), g_processes[i].parentProcessID);
-        LVITEM lvi = {0};
-        lvi.mask = LVIF_TEXT;
-        lvi.iItem = i;
-        lvi.iSubItem = 0;
-        lvi.pszText = g_processes[i].szProcessName;
-        SendMessage(hList, LVM_INSERTITEM, 0, (LPARAM)&lvi);
-        lvi.iSubItem = 1; lvi.pszText = pidStr;
-        SendMessage(hList, LVM_SETITEM, 0, (LPARAM)&lvi);
-        lvi.iSubItem = 2; lvi.pszText = ppidStr;
-        SendMessage(hList, LVM_SETITEM, 0, (LPARAM)&lvi);
-    }
+    qsort(g_processes, g_counter, sizeof(struct process), CompareByCreationDesc);
+    ReloadList();
 
     ShowWindow(g_hWnd, nCmdShow);
     UpdateWindow(g_hWnd);
