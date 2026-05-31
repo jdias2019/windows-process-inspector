@@ -9,7 +9,7 @@ Basic windows process lister that lists all running processes with their PID and
 ## Usage
 
 ```powershell
-.\plister.exe
+.\plister.exe #Right Click to kill a process
 ```
 
 ## Build

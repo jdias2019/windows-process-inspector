@@ -4,7 +4,8 @@
 #include<psapi.h>
 #include<tlhelp32.h>
 #include<commctrl.h>
-#include<shellapi.h>      
+#include<shellapi.h>
+#include"resource.h"
 
 #define MAX_PROCESSES 1000
 
@@ -227,7 +228,23 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
             break;
         }
-    }
+
+        case WM_CONTEXTMENU: {
+            int sel = SendMessage(g_hList, LVM_GETNEXTITEM, -1, LVNI_SELECTED);
+            if (sel != -1) {
+                    TCHAR msg[256];
+                    wsprintf(msg, TEXT("Kill %s?"), g_processes[sel].szProcessName);
+                if (MessageBox(hwnd, msg, TEXT("Kill process"), MB_YESNO) == IDYES) {
+                    HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, g_processes[sel].processID);
+                if (h) TerminateProcess(h, 0);
+                    CloseHandle(h);
+                }
+            }
+            
+        break;
+        
+        }
+}
 
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
@@ -242,18 +259,21 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // register window class
     const char* CLASS_NAME = "MyWindowClass";
 
-    WNDCLASS wc = {0};
+    WNDCLASSEX wc = {0};
+    wc.cbSize = sizeof(WNDCLASSEX);
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = hInstance;
     wc.lpszClassName = CLASS_NAME;
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_MAIN));
+    wc.hIconSm = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_MAIN));
 
-    RegisterClass(&wc);
+    RegisterClassEx(&wc);
 
     // create window
     g_hWnd = CreateWindowEx(
-        0,                              // optional parameters
+        0,                              // optional parameterm
         CLASS_NAME,                     // window class name
         "Process Lister",               // window title
         WS_OVERLAPPED | WS_CAPTION | 
