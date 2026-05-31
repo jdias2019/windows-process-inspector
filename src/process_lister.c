@@ -18,6 +18,7 @@ struct process {
 
 HWND g_hWnd; // global window handle
 HWND g_hList;
+HWND g_hBtn;
 struct process g_processes[MAX_PROCESSES];
 int g_counter = 0;
 int g_sortAscending = 0;
@@ -232,25 +233,56 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         case WM_CONTEXTMENU: {
             int sel = SendMessage(g_hList, LVM_GETNEXTITEM, -1, LVNI_SELECTED);
             if (sel != -1) {
-                    TCHAR msg[256];
-                    wsprintf(msg, TEXT("Kill %s?"), g_processes[sel].szProcessName);
+                TCHAR msg[256];
+                wsprintf(msg, TEXT("Kill %s?"), g_processes[sel].szProcessName);
                 if (MessageBox(hwnd, msg, TEXT("Kill process"), MB_YESNO) == IDYES) {
                     HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, g_processes[sel].processID);
                 if (h) TerminateProcess(h, 0);
                     CloseHandle(h);
                 }
             }
-            
-        break;
-        
+
+            break;
         }
-}
+
+        case WM_COMMAND:
+            if ((HWND)lParam == g_hBtn) {
+            g_counter = 0;
+            loadProcesses();
+
+            // reaply previous status
+            if (g_sortColumn == 0) {
+                if (g_sortAscending)
+                    qsort(g_processes, g_counter, sizeof(struct process), CompareByNameAsc);
+                else
+                    qsort(g_processes, g_counter, sizeof(struct process), CompareByNameDesc);
+            } else if (g_sortColumn == 1) {
+                if (g_sortAscending)
+                    qsort(g_processes, g_counter, sizeof(struct process), CompareByPIDAsc);
+                else
+                    qsort(g_processes, g_counter, sizeof(struct process), CompareByPIDDesc);
+            } else if (g_sortColumn == 2) {
+                if (g_sortAscending)
+                    qsort(g_processes, g_counter, sizeof(struct process), CompareByPPIDAsc);
+                else
+                    qsort(g_processes, g_counter, sizeof(struct process), CompareByPPIDDesc);
+            } else if (g_sortColumn == 3) {
+                if (g_sortAscending)
+                    qsort(g_processes, g_counter, sizeof(struct process), CompareByCreationAsc);
+                else
+                    qsort(g_processes, g_counter, sizeof(struct process), CompareByCreationDesc);
+            }
+              ReloadList();
+            }
+
+            break;
+    }
 
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-    
+   
     loadProcesses();
     
     INITCOMMONCONTROLSEX icex = { sizeof(INITCOMMONCONTROLSEX), ICC_LISTVIEW_CLASSES };
@@ -273,7 +305,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     // create window
     g_hWnd = CreateWindowEx(
-        0,                              // optional parameterm
+        0,                              // optional parameters
         CLASS_NAME,                     // window class name
         "Process Lister",               // window title
         WS_OVERLAPPED | WS_CAPTION | 
@@ -293,7 +325,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     HWND hList = CreateWindowEx(
         0, WC_LISTVIEW, NULL,
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | LVS_REPORT,
-        0, 0, 1200, 640,
+        0, 30, 1200, 610,
         g_hWnd, NULL, hInstance, NULL
     );
 
@@ -312,11 +344,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     lvc.iSubItem = 3; lvc.pszText = TEXT("Uptime"); lvc.cx = 100;
     SendMessage(hList, LVM_INSERTCOLUMN, 3, (LPARAM)&lvc);
 
+    HWND hBtn = CreateWindowEx(0, "BUTTON", "Refresh", WS_CHILD | WS_VISIBLE, 0, 0, 80, 25, g_hWnd, (HMENU)101, hInstance, NULL);
+    g_hBtn = hBtn;
+
     qsort(g_processes, g_counter, sizeof(struct process), CompareByCreationDesc);
     ReloadList();
 
     ShowWindow(g_hWnd, nCmdShow);
     UpdateWindow(g_hWnd);
+
 
     // message loop
     MSG msg = {0};
