@@ -21,7 +21,8 @@ struct process g_processes[MAX_PROCESSES];
 int g_counter = 0;
 int g_sortAscending = 0;
 int g_totalProcesses = 0;     
-BOOL g_bInitialized = FALSE;  
+BOOL g_bInitialized = FALSE;
+int g_sortColumn = 3;
 
 void FormatUptime(FILETIME ft, TCHAR* buf, int size) {
     FILETIME now;
@@ -94,6 +95,46 @@ void listProcessNameAndID (DWORD processID) {
     CloseHandle(hProcess);
 }
 
+int CompareByNameAsc(const void* a, const void* b) {
+    return _tcscmp(((struct process*)a)->szProcessName, ((struct process*)b)->szProcessName);
+}
+
+int CompareByNameDesc(const void* a, const void* b) {
+    return _tcscmp(((struct process*)b)->szProcessName, ((struct process*)a)->szProcessName);
+}
+
+int CompareByPIDAsc(const void* a, const void* b) {
+    struct process* pa = (struct process*)a;
+    struct process* pb = (struct process*)b;
+    if (pa->processID < pb->processID) return -1;
+    if (pa->processID > pb->processID) return 1;
+    return 0;
+}
+
+int CompareByPIDDesc(const void* a, const void* b) {
+    struct process* pa = (struct process*)a;
+    struct process* pb = (struct process*)b;
+    if (pa->processID > pb->processID) return -1;
+    if (pa->processID < pb->processID) return 1;
+    return 0;
+}
+
+int CompareByPPIDAsc(const void* a, const void* b) {
+    struct process* pa = (struct process*)a;
+    struct process* pb = (struct process*)b;
+    if (pa->parentProcessID < pb->parentProcessID) return -1;
+    if (pa->parentProcessID > pb->parentProcessID) return 1;
+    return 0;
+}
+
+int CompareByPPIDDesc(const void* a, const void* b) {
+    struct process* pa = (struct process*)a;
+    struct process* pb = (struct process*)b;
+    if (pa->parentProcessID > pb->parentProcessID) return -1;
+    if (pa->parentProcessID < pb->parentProcessID) return 1;
+    return 0;
+}
+
 int CompareByCreationDesc(const void* a, const void* b) {
     struct process* pa = (struct process*)a;
     struct process* pb = (struct process*)b;
@@ -101,7 +142,9 @@ int CompareByCreationDesc(const void* a, const void* b) {
 }
 
 int CompareByCreationAsc(const void* a, const void* b) {
-    return CompareByCreationDesc(b, a);
+    struct process* pa = (struct process*)a;
+    struct process* pb = (struct process*)b;
+    return CompareFileTime(&pa->upTime, &pb->upTime);
 }
 
 void ReloadList() {
@@ -147,12 +190,40 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             LPNMHDR nmh = (LPNMHDR)lParam;
             if (nmh->hwndFrom == g_hList && nmh->code == LVN_COLUMNCLICK) {
                 LPNMLISTVIEW lv = (LPNMLISTVIEW)lParam;
-                if (lv->iSubItem == 3) {
+                int col = lv->iSubItem;
+
+                if (col == g_sortColumn)
                     g_sortAscending = !g_sortAscending;
-                    qsort(g_processes, g_counter, sizeof(struct process), g_sortAscending ? CompareByCreationAsc : CompareByCreationDesc);
-                    ReloadList();
+                else {
+                    g_sortColumn = col;
+                    g_sortAscending = 1;
                 }
+
+                if (col == 0) {
+                    if (g_sortAscending)
+                        qsort(g_processes, g_counter, sizeof(struct process), CompareByNameAsc);
+                    else
+                        qsort(g_processes, g_counter, sizeof(struct process), CompareByNameDesc);
+                } else if (col == 1) {
+                    if (g_sortAscending)
+                        qsort(g_processes, g_counter, sizeof(struct process), CompareByPIDAsc);
+                    else
+                        qsort(g_processes, g_counter, sizeof(struct process), CompareByPIDDesc);
+                } else if (col == 2) {
+                    if (g_sortAscending)
+                        qsort(g_processes, g_counter, sizeof(struct process), CompareByPPIDAsc);
+                    else
+                        qsort(g_processes, g_counter, sizeof(struct process), CompareByPPIDDesc);
+                } else if (col == 3) {
+                    if (g_sortAscending)
+                        qsort(g_processes, g_counter, sizeof(struct process), CompareByCreationAsc);
+                    else
+                        qsort(g_processes, g_counter, sizeof(struct process), CompareByCreationDesc);
+                }
+
+                ReloadList();
             }
+
             break;
         }
     }
