@@ -4,13 +4,36 @@
 #include <psapi.h>
 #include <tlhelp32.h>
 
-#define MAX_PROCESSES 1000  
+#define MAX_PROCESSES 1000
+
+WNDPROC g_origListProc;
+static float g_scrollAccum = 0.0f;
 
 struct process {
     TCHAR szProcessName[MAX_PATH];
     DWORD processID;
     DWORD parentProcessID;
 };
+
+LRESULT CALLBACK ListProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_MOUSEWHEEL) {
+        short raw = GET_WHEEL_DELTA_WPARAM(wParam);
+        g_scrollAccum += (float)raw / WHEEL_DELTA;
+
+        while (g_scrollAccum >= 1.0f) {
+            SendMessage(hwnd, WM_VSCROLL, SB_LINEUP, 0);
+            g_scrollAccum -= 1.0f;
+        }
+        while (g_scrollAccum <= -1.0f) {
+            SendMessage(hwnd, WM_VSCROLL, SB_LINEDOWN, 0);
+            g_scrollAccum += 1.0f;
+        }
+
+        return 0;
+    }
+
+    return CallWindowProc(g_origListProc, hwnd, msg, wParam, lParam);
+}
 
 HWND g_hWnd; // global window handle
 struct process g_processes[MAX_PROCESSES];
@@ -108,9 +131,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         0, 0, 800, 600,
         g_hWnd, NULL, hInstance, NULL
     );
+
+    g_origListProc = (WNDPROC)SetWindowLongPtr(hList, GWLP_WNDPROC, (LONG_PTR)ListProc);
+
     for (int i = 0; i < g_counter; i++) {
         char buffer[512];
-        sprintf(buffer, "%-125s PID: %-6d PPID: %d",
+        sprintf(buffer, "%-125s PID: %-10d PPID: %d",
         g_processes[i].szProcessName,
         g_processes[i].processID,
         g_processes[i].parentProcessID);
