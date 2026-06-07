@@ -8,19 +8,30 @@
 #include"resource.h"
 
 #define MAX_PROCESSES 1000
+#define MAX_MODULES   2000
 
 struct process {
     TCHAR szProcessName[MAX_PATH];
     DWORD processID;
     DWORD parentProcessID;
     FILETIME upTime;
+    int nmods;
+};
+
+struct module {
+    TCHAR szName[MAX_PATH];
+    DWORD_PTR base;
+    DWORD_PTR size;
 };
 
 HWND g_hWnd; // global window handle
 HWND g_hList;
 HWND g_hBtn;
+HWND g_hModList;
 struct process g_processes[MAX_PROCESSES];
+struct module g_mods[MAX_MODULES];
 int g_counter = 0;
+int g_nmods = 0;
 int g_sortAscending = 0;
 int g_totalProcesses = 0;     
 BOOL g_bInitialized = FALSE;
@@ -65,6 +76,7 @@ void loadProcesses() {
                 g_processes[g_counter].upTime.dwLowDateTime = 0;
                 g_processes[g_counter].upTime.dwHighDateTime = 0;
             }
+            g_processes[g_counter].nmods = -1;
             g_counter++;
             g_totalProcesses++;  
 
@@ -138,6 +150,22 @@ int CompareByPPIDDesc(const void* a, const void* b) {
     return 0;
 }
 
+int CompareByModsAsc(const void* a, const void* b) {
+    struct process* pa = (struct process*)a;
+    struct process* pb = (struct process*)b;
+    if (pa->nmods < pb->nmods) return -1;
+    if (pa->nmods > pb->nmods) return 1;
+    return 0;
+}
+
+int CompareByModsDesc(const void* a, const void* b) {
+    struct process* pa = (struct process*)a;
+    struct process* pb = (struct process*)b;
+    if (pa->nmods > pb->nmods) return -1;
+    if (pa->nmods < pb->nmods) return 1;
+    return 0;
+}
+
 int CompareByCreationDesc(const void* a, const void* b) {
     struct process* pa = (struct process*)a;
     struct process* pb = (struct process*)b;
@@ -155,7 +183,7 @@ void ReloadList() {
     SendMessage(g_hList, LVM_DELETEALLITEMS, 0, 0);
 
     for (int i = 0; i < g_counter; i++) {
-        TCHAR pidStr[32], ppidStr[32], uptimeStr[32];
+        TCHAR pidStr[32], ppidStr[32], uptimeStr[32], modsStr[32];
         wsprintf(pidStr, TEXT("%d"), g_processes[i].processID);
         wsprintf(ppidStr, TEXT("%d"), g_processes[i].parentProcessID);
         if (g_processes[i].upTime.dwLowDateTime == 0 && g_processes[i].upTime.dwHighDateTime == 0) {
@@ -163,6 +191,8 @@ void ReloadList() {
         } else {
             FormatUptime(g_processes[i].upTime, uptimeStr, 32);
         }
+        if (g_processes[i].nmods < 0) _tcscpy(modsStr, TEXT("?"));
+        else wsprintf(modsStr, TEXT("%d"), g_processes[i].nmods);
 
         LVITEM lvi = {0};
         lvi.mask = LVIF_TEXT;
@@ -176,10 +206,107 @@ void ReloadList() {
         SendMessage(g_hList, LVM_SETITEM, 0, (LPARAM)&lvi);
         lvi.iSubItem = 3; lvi.pszText = uptimeStr;
         SendMessage(g_hList, LVM_SETITEM, 0, (LPARAM)&lvi);
+        lvi.iSubItem = 4; lvi.pszText = modsStr;
+        SendMessage(g_hList, LVM_SETITEM, 0, (LPARAM)&lvi);
     }
 
     SendMessage(g_hList, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(g_hList, NULL, TRUE);
+}
+
+void loadModules(DWORD processID) {
+    g_nmods = 0;
+
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processID);
+    if (hProcess) {
+        HMODULE mods[1024];
+        DWORD cb = 0;
+        if (EnumProcessModulesEx(hProcess, mods, sizeof(mods), &cb, LIST_MODULES_ALL)) {
+            int n = cb / sizeof(HMODULE);
+            for (int i = 0; i < n && g_nmods < MAX_MODULES; i++) {
+                TCHAR szName[MAX_PATH];
+                if (!GetModuleBaseName(hProcess, mods[i], szName, MAX_PATH)) continue;
+                _tcscpy(g_mods[g_nmods].szName, szName);
+                MODULEINFO mi = {0};
+                if (GetModuleInformation(hProcess, mods[i], &mi, sizeof(mi))) {
+                    g_mods[g_nmods].base = (DWORD_PTR)mi.lpBaseOfDll;
+                    g_mods[g_nmods].size = mi.SizeOfImage;
+                }
+                g_nmods++;
+            }
+        }
+        CloseHandle(hProcess);
+        if (g_nmods > 0) return;
+    }
+
+    HANDLE hSnap;
+    int tries = 0;
+    do {
+        hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, processID);
+        tries++;
+    } while (hSnap == INVALID_HANDLE_VALUE && GetLastError() == ERROR_BAD_LENGTH && tries < 5);
+
+    if (hSnap == INVALID_HANDLE_VALUE) return;
+
+    MODULEENTRY32 me;
+    me.dwSize = sizeof(MODULEENTRY32);
+    for (BOOL ok = Module32First(hSnap, &me); ok && g_nmods < MAX_MODULES; ok = Module32Next(hSnap, &me)) {
+        _tcscpy(g_mods[g_nmods].szName, me.szModule);
+        g_mods[g_nmods].base = (DWORD_PTR)me.modBaseAddr;
+        g_mods[g_nmods].size = me.modBaseSize;
+        g_nmods++;
+    }
+    CloseHandle(hSnap);
+}
+
+void ReloadModList() {
+    SendMessage(g_hModList, WM_SETREDRAW, FALSE, 0);
+    SendMessage(g_hModList, LVM_DELETEALLITEMS, 0, 0);
+
+    for (int i = 0; i < g_nmods; i++) {
+        TCHAR addr[32], sz[32];
+        wsprintf(addr, TEXT("0x%I64X"), (ULONGLONG)g_mods[i].base);
+        wsprintf(sz, TEXT("0x%I64X"), (ULONGLONG)g_mods[i].size);
+
+        LVITEM lvi = {0};
+        lvi.mask = LVIF_TEXT;
+        lvi.iItem = i;
+        lvi.iSubItem = 0; lvi.pszText = g_mods[i].szName;
+        SendMessage(g_hModList, LVM_INSERTITEM, 0, (LPARAM)&lvi);
+        lvi.iSubItem = 1; lvi.pszText = addr;
+        SendMessage(g_hModList, LVM_SETITEM, 0, (LPARAM)&lvi);
+        lvi.iSubItem = 2; lvi.pszText = sz;
+        SendMessage(g_hModList, LVM_SETITEM, 0, (LPARAM)&lvi);
+    }
+
+    SendMessage(g_hModList, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(g_hModList, NULL, TRUE);
+}
+
+static DWORD WINAPI preCheckThread(LPVOID param) {
+    for (int i = 0; i < g_counter; i++) {
+        HANDLE hSnap;
+        int tries = 0;
+        do {
+            hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, g_processes[i].processID);
+            tries++;
+        } while (hSnap == INVALID_HANDLE_VALUE && GetLastError() == ERROR_BAD_LENGTH && tries < 3);
+
+        if (hSnap == INVALID_HANDLE_VALUE) {
+            g_processes[i].nmods = 0;
+        } else {
+            MODULEENTRY32 me;
+            me.dwSize = sizeof(MODULEENTRY32);
+            int count = 0;
+            for (BOOL ok = Module32First(hSnap, &me); ok; ok = Module32Next(hSnap, &me))
+                count++;
+            g_processes[i].nmods = count;
+            CloseHandle(hSnap);
+        }
+
+        PostMessage(g_hWnd, WM_USER, (WPARAM)i, 0);
+    }
+    return 0;
 }
 
 // window procedure function
@@ -188,6 +315,22 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         case WM_DESTROY:
             PostQuitMessage(0);
             return 0;
+
+        case WM_USER: {
+            int i = (int)wParam;
+            if (i >= 0 && i < g_counter) {
+                TCHAR modsStr[32];
+                if (g_processes[i].nmods < 0) _tcscpy(modsStr, TEXT("?"));
+                else wsprintf(modsStr, TEXT("%d"), g_processes[i].nmods);
+                LVITEM lvi = {0};
+                lvi.mask = LVIF_TEXT;
+                lvi.iItem = i;
+                lvi.iSubItem = 4;
+                lvi.pszText = modsStr;
+                SendMessage(g_hList, LVM_SETITEM, 0, (LPARAM)&lvi);
+            }
+            return 0;
+        }
 
         case WM_NOTIFY: {
             LPNMHDR nmh = (LPNMHDR)lParam;
@@ -222,9 +365,44 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                         qsort(g_processes, g_counter, sizeof(struct process), CompareByCreationAsc);
                     else
                         qsort(g_processes, g_counter, sizeof(struct process), CompareByCreationDesc);
+                } else if (col == 4) {
+                    if (g_sortAscending)
+                        qsort(g_processes, g_counter, sizeof(struct process), CompareByModsAsc);
+                    else
+                        qsort(g_processes, g_counter, sizeof(struct process), CompareByModsDesc);
                 }
 
                 ReloadList();
+                g_nmods = 0;
+                SendMessage(g_hModList, LVM_DELETEALLITEMS, 0, 0);
+            }
+
+            if (nmh->hwndFrom == g_hList && nmh->code == LVN_ITEMCHANGED) {
+                LPNMLISTVIEW lv = (LPNMLISTVIEW)lParam;
+                if (lv->uNewState & LVIS_SELECTED) {
+                    loadModules(g_processes[lv->iItem].processID);
+                    g_processes[lv->iItem].nmods = g_nmods;
+                    InvalidateRect(g_hList, NULL, FALSE);
+                    ReloadModList();
+
+                    TCHAR title[256];
+                    wsprintf(title, TEXT("Process Inspector - %s [%d modules]"),
+                             g_processes[lv->iItem].szProcessName, g_nmods);
+                    SetWindowText(hwnd, title);
+                }
+            }
+
+            if (nmh->hwndFrom == g_hList && nmh->code == NM_CUSTOMDRAW) {
+                LPNMLVCUSTOMDRAW cd = (LPNMLVCUSTOMDRAW)lParam;
+                if (cd->nmcd.dwDrawStage == CDDS_PREPAINT)
+                    return CDRF_NOTIFYITEMDRAW;
+                if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+                    int i = (int)cd->nmcd.dwItemSpec;
+                    if (g_processes[i].nmods == 0)
+                        cd->clrText = RGB(180, 0, 0);
+                    return CDRF_DODEFAULT;
+                }
+                return CDRF_DODEFAULT;
             }
 
             break;
@@ -248,6 +426,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         case WM_COMMAND:
             if ((HWND)lParam == g_hBtn) {
             g_counter = 0;
+            g_nmods = 0;
             loadProcesses();
 
             // reaply previous status
@@ -271,8 +450,15 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                     qsort(g_processes, g_counter, sizeof(struct process), CompareByCreationAsc);
                 else
                     qsort(g_processes, g_counter, sizeof(struct process), CompareByCreationDesc);
+            } else if (g_sortColumn == 4) {
+                if (g_sortAscending)
+                    qsort(g_processes, g_counter, sizeof(struct process), CompareByModsAsc);
+                else
+                    qsort(g_processes, g_counter, sizeof(struct process), CompareByModsDesc);
             }
               ReloadList();
+              SendMessage(g_hModList, LVM_DELETEALLITEMS, 0, 0);
+              CreateThread(NULL, 0, preCheckThread, NULL, 0, NULL);
             }
 
             break;
@@ -307,11 +493,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     g_hWnd = CreateWindowEx(
         0,                              // optional parameters
         CLASS_NAME,                     // window class name
-        "Process Lister",               // window title
+        "Process Inspector",               // window title
         WS_OVERLAPPED | WS_CAPTION | 
         WS_SYSMENU | WS_MINIMIZEBOX,    // window style (not resizeble)
         CW_USEDEFAULT, CW_USEDEFAULT,   // x, Y position
-        1200, 650,                      // width, Height
+        1200, 800,                      // width, Height
         NULL,                           // parent window
         NULL,                           // menu
         hInstance,                      // application instance
@@ -325,17 +511,26 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     HWND hList = CreateWindowEx(
         0, WC_LISTVIEW, NULL,
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | LVS_REPORT,
-        0, 30, 1200, 610,
+        0, 30, 1200, 440,
         g_hWnd, NULL, hInstance, NULL
     );
 
     g_hList = hList;
 
+    HWND hModList = CreateWindowEx(
+        0, WC_LISTVIEW, NULL,
+        WS_CHILD | WS_VISIBLE | WS_VSCROLL | LVS_REPORT,
+        0, 480, 1200, 290,
+        g_hWnd, NULL, hInstance, NULL
+    );
+    g_hModList = hModList;
+
     ListView_SetExtendedListViewStyle(hList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+    ListView_SetExtendedListViewStyle(hModList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
 
     LVCOLUMN lvc = {0};
     lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
-    lvc.iSubItem = 0; lvc.pszText = TEXT("Process Name"); lvc.cx = 925;
+    lvc.iSubItem = 0; lvc.pszText = TEXT("Process Name"); lvc.cx = 860;
     SendMessage(hList, LVM_INSERTCOLUMN, 0, (LPARAM)&lvc);    
     lvc.iSubItem = 1; lvc.pszText = TEXT("PID"); lvc.cx = 80;
     SendMessage(hList, LVM_INSERTCOLUMN, 1, (LPARAM)&lvc);
@@ -343,12 +538,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     SendMessage(hList, LVM_INSERTCOLUMN, 2, (LPARAM)&lvc);
     lvc.iSubItem = 3; lvc.pszText = TEXT("Uptime"); lvc.cx = 100;
     SendMessage(hList, LVM_INSERTCOLUMN, 3, (LPARAM)&lvc);
+    lvc.iSubItem = 4; lvc.pszText = TEXT("Mods"); lvc.cx = 60;
+    SendMessage(hList, LVM_INSERTCOLUMN, 4, (LPARAM)&lvc);
+
+    lvc.iSubItem = 0; lvc.pszText = TEXT("Module"); lvc.cx = 700;
+    SendMessage(hModList, LVM_INSERTCOLUMN, 0, (LPARAM)&lvc);
+    lvc.iSubItem = 1; lvc.pszText = TEXT("Base"); lvc.cx = 120;
+    SendMessage(hModList, LVM_INSERTCOLUMN, 1, (LPARAM)&lvc);
+    lvc.iSubItem = 2; lvc.pszText = TEXT("Size"); lvc.cx = 80;
+    SendMessage(hModList, LVM_INSERTCOLUMN, 2, (LPARAM)&lvc);
 
     HWND hBtn = CreateWindowEx(0, "BUTTON", "Refresh", WS_CHILD | WS_VISIBLE, 0, 0, 80, 25, g_hWnd, (HMENU)101, hInstance, NULL);
     g_hBtn = hBtn;
 
     qsort(g_processes, g_counter, sizeof(struct process), CompareByCreationDesc);
     ReloadList();
+    CreateThread(NULL, 0, preCheckThread, NULL, 0, NULL);
 
     ShowWindow(g_hWnd, nCmdShow);
     UpdateWindow(g_hWnd);
