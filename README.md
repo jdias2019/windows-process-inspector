@@ -1,6 +1,6 @@
-# Windows Process Lister
+# Process Inspector
 
-Lightweight Windows process viewer written in C using the Win32 API. Lists all running processes with their name, PID, PPID, and uptime.
+Lightweight Windows process &amp; module viewer written in C using the Win32 API. Lists all running processes with their name, PID, PPID, uptime, and loaded modules.
 
 ![preview](media/preview.png)
 
@@ -12,12 +12,13 @@ Lightweight Windows process viewer written in C using the Win32 API. Lists all r
 ## Usage
  
 ```powershell
-.\plister.exe
+.\pinspector.exe
 ```
  
 - Sort by any column — click the header 
 - Kill a process — right-click and confirm
 - Reload the list — click the Refresh button
+- Inspect modules — click a process to view its DLLs
 
 > Some processes won't show uptime and cannot be killed, unless you run as **Administrator**. 
 
